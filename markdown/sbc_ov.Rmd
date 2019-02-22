@@ -1,0 +1,106 @@
+---
+title: "Omitted Variable-A-Palooza"
+output:
+  html_document:
+    toc: true
+    toc_depth: 5
+    toc_float: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(readr)
+library(ggplot2)
+library(dagitty)
+combined_data <- readRDS("../derived_data/combined_lter_aggregated.Rds") %>%
+  filter(YEAR > 2003)%>%
+  filter(SITE != "IVEE") %>%
+  filter(!(paste(SITE, TRANSECT, sep="") %in% c("SCDI1", "SCTW1")))
+
+combined_data_nourch <- combined_data %>% filter(URCHINS<28*6)
+```
+
+# The Data
+
+This data is from the SBC LTER. We have `r length(unique(combined_data$YEAR))` years of data ranging from `r range(combined_data$YEAR)[1]` to `r range(combined_data$YEAR)[2]`. There are `r length(unique(combined_data$SITE))` sites and `r length(unique(paste(combined_data$SITE, combined_data$TRANSECT)))` transects. Here's the distribution of transects per site.
+
+```{r data_properties}
+combined_data %>%
+  group_by(SITE) %>%
+  summarize(number_of_transects = length(unique(TRANSECT)))
+
+```
+
+```{r sitemap}
+library(readxl)
+library(rnaturalearth)
+library(sf)
+sites <- read_excel("../raw_data/lter_sites.xlsx") %>%
+  st_as_sf(coords = c("Long", "Lat"), crs = 4326)
+coast <- ne_coastline(scale = 50, returnclass = "sf")
+
+
+
+ggplot() +
+  geom_sf(data = sites, size = 1.5, color = "red") +
+  geom_sf(data = coast, fill = "white") +
+  coord_sf(xlim = c(-121.6, -118.9), ylim = c(33.9, 34.6))
+
+```
+
+In this dataset, we have a number of quantities at the transect level. We have kelp stipes per transect, subcanopy kelp stipes per transect, % cover invertebrates per transect, % cover of algae per transect, and # of urchins in 6 quads along the transect.
+
+Broadly, the data data looks like this
+
+```{r pairs}
+pairs(combined_data[,-c(1:3)])
+```
+
+# The System
+
+With these variables, the DAG for the system looks like this.
+
+```{r dag}
+system_dag <- dagitty("dag{
+kelp -> algae -> inverts
+kelp -> subcanopy -> algae
+subcanopy -> inverts
+urchins -> kelp
+urchins -> subcanopy
+}")
+
+plot(graphLayout(system_dag))
+```
+
+If we want to incorporate unmeasured variables - correlated with site and time - we have something more like
+
+```{r dag2}
+system_dag <- dagitty("dag{
+kelp -> algae -> inverts
+kelp -> subcanopy -> algae
+subcanopy -> inverts
+urchins -> kelp
+urchins -> subcanopy
+environment -> kelp
+environment -> algae
+environment -> subcanopy
+}")
+
+plot(graphLayout(system_dag))
+```
+
+```{r}
+ggplot(combined_data  ,
+       aes(x = KELP, y = ALGAE, color = SITE)) +
+  geom_point() +
+  stat_smooth(method = "lm", fill = NA, mapping = aes(group = 1))
+```
+
+```{r ark}
+ark <- read_csv("../derived_data/arkema.csv")
+
+ggplot(ark,
+       aes(x = `frond density`, y = `percent algae`, color = site)) +
+  geom_point()
+```
