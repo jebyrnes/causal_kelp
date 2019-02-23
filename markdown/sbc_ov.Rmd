@@ -105,9 +105,10 @@ plot(system_dag)
 
 ## A Bivariate Relationship
 
-We know that kelp outcompetes benthic algae by shading it. When we look at the data as a whole, there is a trend, but is exceedingly weak. 
+We know that kelp outcompetes benthic algae by shading it. When we look at the data as a whole, there is a trend, but is exceedingly weak. If even positive.
+
 ```{r}
-ggplot(combined_data_nourch  ,
+ggplot(combined_data  ,
        aes(x = KELP, y = ALGAE, color = SITE)) +
   geom_point() +
   stat_smooth(method = "lm", fill = NA, mapping = aes(group = 1))
@@ -129,7 +130,7 @@ So, how would we model this relationship to get the clearest and cleanest causal
 # Naieve Fit
 ```{r}
 mod_naieve <- lm(ALGAE ~ KELP,
-                  data = combined_data_nourch)
+                  data = combined_data)
 
 tidy(mod_naieve)
 ```
@@ -139,7 +140,7 @@ tidy(mod_naieve)
 ```{r}
 mod_random <- lme(ALGAE ~ KELP,
                   random = list(~1|SITE, (~1|TRANSECT)),
-                  data = combined_data_nourch)
+                  data = combined_data)
 
 tidy(mod_random, effects = "fixed")
 ```
@@ -148,30 +149,29 @@ tidy(mod_random, effects = "fixed")
 ```{r fixed}
 ```{r}
 mod_fixed <- lm(ALGAE ~ KELP + SITE + factor(TRANSECT),
-                  data = combined_data_nourch)
+                  data = combined_data)
 
 tidy(mod_fixed)[1:2,]
 ```
 
 # Group Centered Predictor
 ```{r gmo}
-combined_data_gmp_nourch <- combined_data %>%
+combined_data_gmp<- combined_data %>%
   group_by(SITE, TRANSECT) %>%
   mutate(TRANSECT_MEAN_KELP = mean(KELP) ) %>% 
-  ungroup() %>%
-  filter(URCHINS<28*6)
+  ungroup()
 
 
 mod_gmp<- lme(ALGAE ~ KELP + TRANSECT_MEAN_KELP,
                   random = list(~1|SITE, (~1|TRANSECT)),
-                  data = combined_data_gmp_nourch)
+                  data = combined_data_gmp)
 
 tidy(mod_gmp, effects = "fixed")
   
 ```
 # Group Mean Centering
 ```{r gmc}
-combined_data_gmc_nourch <- combined_data_gmp_nourch %>%
+combined_data_gmc <- combined_data_gmp %>%
   group_by(SITE, TRANSECT) %>%
   mutate(KELP_ANOMALY = KELP - TRANSECT_MEAN_KELP) %>%
   ungroup()
@@ -179,7 +179,7 @@ combined_data_gmc_nourch <- combined_data_gmp_nourch %>%
 
 mod_gmc<- lme(ALGAE ~ KELP_ANOMALY + TRANSECT_MEAN_KELP,
                   random = list(~1|SITE, (~1|TRANSECT)),
-                  data = combined_data_gmc_nourch)
+                  data = combined_data_gmc)
 
 tidy(mod_gmc, effects = "fixed")
   
@@ -191,9 +191,7 @@ diff_data <- combined_data %>%
   group_by(SITE, TRANSECT) %>%
   mutate(KELP_CHANGE = (KELP - lag(KELP)),
          ALGAE_CHANGE = (ALGAE - lag(ALGAE))) %>% 
-  ungroup() %>%
-  filter(URCHINS<28*6)
-
+  ungroup()
 
 mod_diff<- lme(ALGAE_CHANGE ~ KELP_CHANGE,
                   random = list(~1|SITE, (~1|TRANSECT)),
