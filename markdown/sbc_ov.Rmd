@@ -13,6 +13,9 @@ library(tidyverse)
 library(readr)
 library(ggplot2)
 library(dagitty)
+library(broom)
+library(nlme)
+
 combined_data <- readRDS("../derived_data/combined_lter_aggregated.Rds") %>%
   filter(YEAR > 2003)%>%
   filter(SITE != "IVEE") %>%
@@ -32,7 +35,7 @@ combined_data %>%
 
 ```
 
-```{r sitemap}
+```{r sitemap, cache=TRUE}
 library(readxl)
 library(rnaturalearth)
 library(sf)
@@ -41,11 +44,15 @@ sites <- read_excel("../raw_data/lter_sites.xlsx") %>%
 coast <- ne_coastline(scale = 50, returnclass = "sf")
 
 
+countries_10_sf <- ne_download(scale = 10, category = 'cultural', type = 'countries', returnclass="sf")
+ocean_10_sf <- ne_download(scale = 10, category = 'physical', type = 'ocean', returnclass="sf")
+
 
 ggplot() +
-  geom_sf(data = sites, size = 1.5, color = "red") +
-  geom_sf(data = coast, fill = "white") +
-  coord_sf(xlim = c(-121.6, -118.9), ylim = c(33.9, 34.6))
+  geom_sf(data = countries_10_sf, fill="palegreen4", alpha=0.5) +
+  geom_sf(data = ocean_10_sf, fill="lightblue") +  
+  geom_sf(data = sites, size = 2, color = "red") +
+  coord_sf(xlim = c(-120.8, -118.9), ylim = c(33.9, 34.6))
 
 ```
 
@@ -62,45 +69,136 @@ pairs(combined_data[,-c(1:3)])
 With these variables, the DAG for the system looks like this.
 
 ```{r dag}
-system_dag <- dagitty("dag{
+system_dag_simple <- dagitty("dag{
 kelp -> algae -> inverts
 kelp -> subcanopy -> algae
 subcanopy -> inverts
-urchins -> kelp
-urchins -> subcanopy
 }")
 
-plot(graphLayout(system_dag))
+coordinates(system_dag_simple) <- list(x = c(algae = 1, inverts = 3,kelp = 2, subcanopy = 2),
+                                y = c(algae = 4,inverts = 4,kelp = 2, subcanopy = 3))
+
+
+plot(system_dag_simple)
 ```
 
 If we want to incorporate unmeasured variables - correlated with site and time - we have something more like
 
 ```{r dag2}
-system_dag <- dagitty("dag{
+system_dag <- dagitty('dag{
 kelp -> algae -> inverts
 kelp -> subcanopy -> algae
 subcanopy -> inverts
 urchins -> kelp
 urchins -> subcanopy
+urchins -> algae
 environment -> kelp
 environment -> algae
 environment -> subcanopy
-}")
+}')
 
-plot(graphLayout(system_dag))
+coordinates(system_dag) <- list(x = c(algae = 1,environment = 2, inverts = 3,kelp = 2, subcanopy = 2, urchins = 1),
+                                y = c(algae = 4,environment = 1, inverts = 4,kelp = 2, subcanopy = 3, urchins = 1))
+
+plot(system_dag)
 ```
 
+## A Bivariate Relationship
+
+We know that kelp outcompetes benthic algae by shading it. When we look at the data as a whole, there is a trend, but is exceedingly weak. 
 ```{r}
-ggplot(combined_data  ,
+ggplot(combined_data_nourch  ,
        aes(x = KELP, y = ALGAE, color = SITE)) +
   geom_point() +
   stat_smooth(method = "lm", fill = NA, mapping = aes(group = 1))
 ```
 
-```{r ark}
+```{r ark, echo = FALSE, eval = FALSE}
+#just comparing to previous results for funsies
 ark <- read_csv("../derived_data/arkema.csv")
 
 ggplot(ark,
        aes(x = `frond density`, y = `percent algae`, color = site)) +
   geom_point()
+```
+
+This is unsurprising given the multivariate model of the system above. In particular, we can see that the environment is clearly a backdoor. Further, urchins can function as an omitted variable, although we've attempted to control that here by subsetting the data. 
+
+So, how would we model this relationship to get the clearest and cleanest causal inference? Parrticularly without measurements of environmental omitted variables?
+
+# Naieve Fit
+```{r}
+mod_naieve <- lm(ALGAE ~ KELP,
+                  data = combined_data_nourch)
+
+tidy(mod_naieve)
+```
+
+
+# Random Effects
+```{r}
+mod_random <- lme(ALGAE ~ KELP,
+                  random = list(~1|SITE, (~1|TRANSECT)),
+                  data = combined_data_nourch)
+
+tidy(mod_random, effects = "fixed")
+```
+
+# Fixed Effects
+```{r fixed}
+```{r}
+mod_fixed <- lm(ALGAE ~ KELP + SITE + factor(TRANSECT),
+                  data = combined_data_nourch)
+
+tidy(mod_fixed)[1:2,]
+```
+
+# Group Centered Predictor
+```{r gmo}
+combined_data_gmp_nourch <- combined_data %>%
+  group_by(SITE, TRANSECT) %>%
+  mutate(TRANSECT_MEAN_KELP = mean(KELP) ) %>% 
+  ungroup() %>%
+  filter(URCHINS<28*6)
+
+
+mod_gmp<- lme(ALGAE ~ KELP + TRANSECT_MEAN_KELP,
+                  random = list(~1|SITE, (~1|TRANSECT)),
+                  data = combined_data_gmp_nourch)
+
+tidy(mod_gmp, effects = "fixed")
+  
+```
+# Group Mean Centering
+```{r gmc}
+combined_data_gmc_nourch <- combined_data_gmp_nourch %>%
+  group_by(SITE, TRANSECT) %>%
+  mutate(KELP_ANOMALY = KELP - TRANSECT_MEAN_KELP) %>%
+  ungroup()
+
+
+mod_gmc<- lme(ALGAE ~ KELP_ANOMALY + TRANSECT_MEAN_KELP,
+                  random = list(~1|SITE, (~1|TRANSECT)),
+                  data = combined_data_gmc_nourch)
+
+tidy(mod_gmc, effects = "fixed")
+  
+```
+
+# Differencing
+```{r diff}
+diff_data <- combined_data %>%
+  group_by(SITE, TRANSECT) %>%
+  mutate(KELP_CHANGE = (KELP - lag(KELP)),
+         ALGAE_CHANGE = (ALGAE - lag(ALGAE))) %>% 
+  ungroup() %>%
+  filter(URCHINS<28*6)
+
+
+mod_diff<- lme(ALGAE_CHANGE ~ KELP_CHANGE,
+                  random = list(~1|SITE, (~1|TRANSECT)),
+                  data = diff_data,
+              na.action = na.omit)
+
+tidy(mod_diff, effects = "fixed")
 ```
